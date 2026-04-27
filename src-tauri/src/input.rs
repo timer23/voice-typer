@@ -1,8 +1,8 @@
-use enigo::{Enigo, Settings};
+use enigo::Settings;
 
+/// Ctrl+V через Windows SendInput
 #[cfg(target_os = "windows")]
 unsafe fn win_paste_text(text: &str) {
-    // ── Clipboard via WinAPI ─────────────────────────────────────────────────
     extern "system" {
         fn OpenClipboard(hwnd: isize) -> i32;
         fn EmptyClipboard() -> i32;
@@ -13,7 +13,7 @@ unsafe fn win_paste_text(text: &str) {
         fn GlobalUnlock(h: *mut std::ffi::c_void) -> i32;
     }
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let hmem = GlobalAlloc(0x0002 /* GMEM_MOVEABLE */, wide.len() * 2);
+    let hmem = GlobalAlloc(0x0002, wide.len() * 2);
     if hmem.is_null() { return; }
     let ptr = GlobalLock(hmem) as *mut u16;
     if ptr.is_null() { return; }
@@ -21,43 +21,53 @@ unsafe fn win_paste_text(text: &str) {
     GlobalUnlock(hmem);
     if OpenClipboard(0) == 0 { return; }
     EmptyClipboard();
-    SetClipboardData(13 /* CF_UNICODETEXT */, hmem);
+    SetClipboardData(13, hmem);
     CloseClipboard();
-
     std::thread::sleep(std::time::Duration::from_millis(60));
 
-    // ── SendInput Ctrl+V ─────────────────────────────────────────────────────
-    // sizeof(INPUT) on Windows x64 = 40 bytes:
-    //   4 (type) + 4 (pad) + 32 (union = max of MOUSEINPUT/KEYBDINPUT/HARDWAREINPUT)
-    #[repr(C)]
-    #[derive(Copy, Clone)]
+    #[repr(C)] #[derive(Copy, Clone)]
     struct KeybdInput { w_vk: u16, w_scan: u16, dw_flags: u32, time: u32, dw_extra_info: usize }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    union InputUnion {
-        ki: KeybdInput,
-        _pad: [u64; 4], // 32 bytes, 8-byte aligned → matches Windows union size
-    }
-
+    #[repr(C)] #[derive(Copy, Clone)]
+    union InputUnion { ki: KeybdInput, _pad: [u64; 4] }
     #[repr(C)]
     struct Input { type_: u32, input: InputUnion }
-
     extern "system" { fn SendInput(n: u32, p: *const Input, cb: i32) -> u32; }
-
-    const KBD: u32 = 1;
-    const CTRL: u16 = 0x11;
-    const V: u16 = 0x56;
-    const UP: u32 = 0x0002;
 
     let z = KeybdInput { w_vk: 0, w_scan: 0, dw_flags: 0, time: 0, dw_extra_info: 0 };
     let seq = [
-        Input { type_: KBD, input: InputUnion { ki: KeybdInput { w_vk: CTRL, ..z } } },
-        Input { type_: KBD, input: InputUnion { ki: KeybdInput { w_vk: V, ..z } } },
-        Input { type_: KBD, input: InputUnion { ki: KeybdInput { w_vk: V,    dw_flags: UP, ..z } } },
-        Input { type_: KBD, input: InputUnion { ki: KeybdInput { w_vk: CTRL, dw_flags: UP, ..z } } },
+        Input { type_: 1, input: InputUnion { ki: KeybdInput { w_vk: 0x11, ..z } } },
+        Input { type_: 1, input: InputUnion { ki: KeybdInput { w_vk: 0x56, ..z } } },
+        Input { type_: 1, input: InputUnion { ki: KeybdInput { w_vk: 0x56, dw_flags: 2, ..z } } },
+        Input { type_: 1, input: InputUnion { ki: KeybdInput { w_vk: 0x11, dw_flags: 2, ..z } } },
     ];
     SendInput(seq.len() as u32, seq.as_ptr(), std::mem::size_of::<Input>() as i32);
+}
+
+/// Cmd/Ctrl+V через enigo (macOS / Linux) — создаётся локально, не хранится в структуре
+#[cfg(not(target_os = "windows"))]
+fn unix_paste_text(text: &str) -> anyhow::Result<()> {
+    use clipboard_rs::{Clipboard, ClipboardContext};
+    use enigo::{Direction, Enigo, Key, Keyboard};
+
+    let ctx = ClipboardContext::new()
+        .map_err(|e| anyhow::anyhow!("Clipboard: {:?}", e))?;
+    ctx.set_text(text.to_owned())
+        .map_err(|e| anyhow::anyhow!("Clipboard set: {:?}", e))?;
+
+    std::thread::sleep(std::time::Duration::from_millis(60));
+
+    let mut e = Enigo::new(&Settings::default())
+        .map_err(|e| anyhow::anyhow!("Enigo: {:?}", e))?;
+
+    #[cfg(target_os = "macos")]
+    let modifier = Key::Meta;
+    #[cfg(not(target_os = "macos"))]
+    let modifier = Key::Control;
+
+    e.key(modifier, Direction::Press).ok();
+    e.key(Key::Unicode('v'), Direction::Click).ok();
+    e.key(modifier, Direction::Release).ok();
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -69,17 +79,14 @@ extern "system" {
     fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
 }
 
+// InputInjector не хранит Enigo — это важно для Send на macOS
 pub struct InputInjector {
-    enigo: Enigo,
     saved_hwnd: isize,
 }
 
 impl InputInjector {
     pub fn new() -> Self {
-        Self {
-            enigo: Enigo::new(&Settings::default()).expect("Не удалось создать Enigo"),
-            saved_hwnd: 0,
-        }
+        Self { saved_hwnd: 0 }
     }
 
     pub fn save_focus(&mut self) {
@@ -95,13 +102,11 @@ impl InputInjector {
         self.saved_hwnd = 0;
     }
 
-    /// Восстановить фокус сразу (вызывается при старте записи, пока наш процесс ещё foreground)
     pub fn restore_focus_quick(&self) {
         self.do_set_foreground();
         std::thread::sleep(std::time::Duration::from_millis(80));
     }
 
-    /// Восстановить фокус перед вставкой (с паузой для надёжности)
     fn restore_focus(&self) {
         self.do_set_foreground();
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -120,11 +125,12 @@ impl InputInjector {
         }
     }
 
-    /// Вставить текст через буфер обмена + Ctrl+V (Windows API)
     pub fn type_text(&mut self, text: &str) -> anyhow::Result<()> {
         self.restore_focus();
         #[cfg(target_os = "windows")]
         unsafe { win_paste_text(text); }
+        #[cfg(not(target_os = "windows"))]
+        unix_paste_text(text)?;
         Ok(())
     }
 }
