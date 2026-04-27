@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Typer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 220px;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      user-select: none;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    .widget {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      background: rgba(22, 18, 18, 0.96);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    }
+
+    /* Полоска-заголовок */
+    .titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 10px 2px;
+      cursor: grab;
+    }
+    .titlebar:active { cursor: grabbing; }
+
+    .drag-handle {
+      width: 36px;
+      height: 3px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 2px;
+    }
+
+    .close-btn {
+      background: none;
+      border: none;
+      color: rgba(255,255,255,0.4);
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 2px;
+      transition: color 0.15s;
+    }
+    .close-btn:hover { color: rgba(255,255,255,0.9); }
+
+    /* Основная панель кнопок */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      padding: 2px 16px 4px;
+    }
+
+    .tool-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      opacity: 0.45;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .tool-btn:hover { opacity: 0.9; background: rgba(255,255,255,0.07); }
+    .tool-btn svg { fill: #fff; width: 18px; height: 18px; }
+
+    /* Кнопка микрофона — центральная, чуть больше */
+    .mic-btn {
+      background: none;
+      border: 2px solid rgba(233, 69, 96, 0.7);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      transition: all 0.2s ease;
+      position: relative;
+    }
+    .mic-btn svg { fill: #e94560; width: 22px; height: 22px; transition: fill 0.2s; }
+    .mic-btn:hover { border-color: #e94560; background: rgba(233,69,96,0.08); }
+
+    .mic-btn.recording {
+      border-color: #e94560;
+      background: #e94560;
+      animation: pulse 1.4s infinite;
+    }
+    .mic-btn.recording svg { fill: #fff; }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(233,69,96,0.5); }
+      50%       { box-shadow: 0 0 0 8px rgba(233,69,96,0); }
+    }
+
+    /* Статус-полоска внизу */
+    .status-bar {
+      height: 2px;
+      background: transparent;
+      transition: background 0.3s;
+    }
+    .status-bar.recording { background: #e94560; animation: slide 1.4s linear infinite; }
+    .status-bar.transcribing { background: #5b9bd5; animation: slide 1s linear infinite; }
+    @keyframes slide {
+      0%   { background-position: -200px 0; }
+      100% { background-position: 200px 0; }
+    }
+
+    /* Панель настроек — скрыта по умолчанию */
+    .settings-panel {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.25s ease;
+      border-top: 0px solid rgba(255,255,255,0.07);
+    }
+    .settings-panel.open {
+      max-height: 110px;
+      border-top-width: 1px;
+    }
+
+    .settings-inner {
+      padding: 10px 12px 12px;
+    }
+
+    .settings-inner label {
+      display: block;
+      font-size: 10px;
+      color: rgba(255,255,255,0.35);
+      margin-bottom: 5px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .key-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .settings-inner input {
+      flex: 1;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      padding: 5px 8px;
+      color: #eee;
+      font-size: 11px;
+      font-family: monospace;
+      outline: none;
+      min-width: 0;
+    }
+    .settings-inner input:focus { border-color: rgba(233,69,96,0.6); }
+
+    .save-btn {
+      background: #e94560;
+      border: none;
+      border-radius: 6px;
+      padding: 5px 10px;
+      color: #fff;
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .save-btn:hover { background: #ff6b7a; }
+
+    .save-msg {
+      font-size: 10px;
+      color: #4caf50;
+      margin-top: 4px;
+      min-height: 14px;
+    }
+    .save-msg.error { color: #e94560; }
+
+    /* Визуализация записи */
+    .wave-wrap {
+      padding: 2px 12px 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+    }
+    .rec-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #e94560;
+      flex-shrink: 0;
+      opacity: 0.18;
+      transition: opacity 0.25s;
+    }
+    .wave-wrap.recording .rec-dot {
+      opacity: 1;
+      animation: dot-blink 1s ease-in-out infinite;
+    }
+    @keyframes dot-blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+    .wave-bars {
+      flex: 1;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      overflow: hidden;
+    }
+    .wave-bar {
+      flex: 1;
+      border-radius: 2px;
+      background: rgba(233, 69, 96, 0.55);
+      height: 10%;
+      min-height: 2px;
+      transition: height 75ms ease;
+    }
+
+    /* Help tooltip */
+    .help-tooltip {
+      display: none;
+      position: absolute;
+      top: 28px;
+      right: 8px;
+      background: rgba(8, 6, 6, 0.97);
+      border: 1px solid rgba(255,255,255,0.13);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.75);
+      z-index: 200;
+      white-space: nowrap;
+      line-height: 1.7;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      pointer-events: none;
+    }
+    .help-tooltip.visible { display: block; }
+    .help-tooltip b { color: #e94560; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="widget" style="position:relative">
+    <div id="helpTooltip" class="help-tooltip">
+      <b>Ctrl+Shift+Space</b> — старт / стоп<br>
+      <span style="opacity:.55">Или кнопка 🎙 на виджете</span>
+    </div>
+    <div class="titlebar" id="dragArea" data-tauri-drag-region>
+      <div class="drag-handle" id="dragHandle"></div>
+      <button class="close-btn" id="closeBtn">✕</button>
+    </div>
+
+    <div class="toolbar">
+      <button class="tool-btn" id="settingsBtn" title="Настройки">
+        <svg viewBox="0 0 24 24">
+          <path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.47.47 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.47.47 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.37 1.04.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.47.47 0 0 0-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"/>
+        </svg>
+      </button>
+
+      <button class="mic-btn" id="micBtn" title="Начать запись (Ctrl+Shift+Space)">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+          <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+        </svg>
+      </button>
+
+      <button class="tool-btn" id="helpBtn" title="Горячая клавиша: Ctrl+Shift+Space">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="wave-wrap" id="waveWrap">
+      <div class="rec-dot" id="recDot"></div>
+      <div class="wave-bars" id="waveBars"></div>
+    </div>
+
+    <div class="status-bar" id="statusBar"></div>
+
+    <!-- Панель настроек -->
+    <div class="settings-panel" id="settingsPanel">
+      <div class="settings-inner">
+        <label>API ключ (Groq или OpenAI)</label>
+        <div class="key-row">
+          <input type="password" id="apiKeyInput" placeholder="gsk_... или sk-..." />
+          <button class="save-btn" id="saveKeyBtn">OK</button>
+        </div>
+        <div class="save-msg" id="saveMsg"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
